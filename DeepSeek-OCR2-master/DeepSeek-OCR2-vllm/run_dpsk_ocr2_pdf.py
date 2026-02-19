@@ -72,7 +72,17 @@ def init_model():
     print("✅ 모델 로드 완료")
 
 
-def pdf_to_images_high_quality(pdf_input, dpi=144, image_format="PNG"):
+def select_page_indices(total_pages, head_pages=3, tail_pages=50):
+    """처리할 페이지 인덱스(0-based) 계산"""
+    if total_pages <= tail_pages:
+        return list(range(total_pages))
+    head = list(range(min(head_pages, total_pages)))
+    tail_start = max(0, total_pages - tail_pages)
+    tail = list(range(tail_start, total_pages))
+    return sorted(set(head + tail))
+
+
+def pdf_to_images_high_quality(pdf_input, dpi=144, image_format="PNG", page_indices=None):
     """PDF를 이미지로 변환 (파일 경로 또는 bytes 지원)"""
     images = []
     
@@ -80,11 +90,18 @@ def pdf_to_images_high_quality(pdf_input, dpi=144, image_format="PNG"):
         pdf_document = fitz.open(stream=pdf_input, filetype="pdf")
     else:
         pdf_document = fitz.open(pdf_input)
+
+    total_pages = pdf_document.page_count
+    selected_page_indices = (
+        list(range(total_pages))
+        if page_indices is None
+        else sorted(set(i for i in page_indices if 0 <= i < total_pages))
+    )
     
     zoom = dpi / 72.0
     matrix = fitz.Matrix(zoom, zoom)
     
-    for page_num in range(pdf_document.page_count):
+    for page_num in selected_page_indices:
         page = pdf_document[page_num]
         pixmap = page.get_pixmap(matrix=matrix, alpha=False)
         Image.MAX_IMAGE_PIXELS = None
@@ -100,7 +117,7 @@ def pdf_to_images_high_quality(pdf_input, dpi=144, image_format="PNG"):
         images.append(img)
     
     pdf_document.close()
-    return images
+    return images, total_pages, selected_page_indices
 
 
 def pil_to_pdf_img2pdf(pil_images, output_path):
@@ -241,9 +258,20 @@ def run_ocr(pdf_input, output_path, filename="output"):
     os.makedirs(output_path, exist_ok=True)
     os.makedirs(f'{output_path}/images', exist_ok=True)
     
-    # PDF -> 이미지 변환
+    # PDF -> 이미지 변환 (50p 이하 전체, 초과 시 앞 3p + 뒤 50p)
     print("PDF loading...")
-    images = pdf_to_images_high_quality(pdf_input)
+    if isinstance(pdf_input, bytes):
+        tmp_doc = fitz.open(stream=pdf_input, filetype="pdf")
+    else:
+        tmp_doc = fitz.open(pdf_input)
+    original_total_pages = tmp_doc.page_count
+    tmp_doc.close()
+
+    selected_page_indices = select_page_indices(original_total_pages, head_pages=3, tail_pages=50)
+    images, _, selected_page_indices = pdf_to_images_high_quality(
+        pdf_input,
+        page_indices=selected_page_indices,
+    )
     
     # 배치 입력 생성
     with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
@@ -266,7 +294,7 @@ def run_ocr(pdf_input, output_path, filename="output"):
     draw_images = []
     jdx = 0
     
-    for output, img in zip(outputs_list, images):
+    for output, img, original_page_idx in zip(outputs_list, images, selected_page_indices):
         content = output.outputs[0].text
         
         if '<｜end▁of▁sentence｜>' in content:
@@ -275,7 +303,7 @@ def run_ocr(pdf_input, output_path, filename="output"):
             if SKIP_REPEAT:
                 continue
         
-        page_num = '\n<--- Page Split --->'
+        page_num = f'\n<--- Page {original_page_idx + 1} Split --->'
         contents_det += content + f'\n{page_num}\n'
         
         image_draw = img.copy()
@@ -310,7 +338,9 @@ def run_ocr(pdf_input, output_path, filename="output"):
         "mmd_det_path": mmd_det_path,
         "layout_pdf_path": pdf_out_path,
         "images_dir": f"{output_path}/images",
-        "total_pages": len(images)
+        "total_pages": original_total_pages,
+        "processed_page_count": len(images),
+        "processed_pages": [i + 1 for i in selected_page_indices],
     }
 
 

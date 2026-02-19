@@ -102,6 +102,8 @@ def handler(job):
                 "status": "completed",
                 "filename": filename,
                 "total_pages": result["total_pages"],
+                "processed_page_count": result.get("processed_page_count", result["total_pages"]),
+                "processed_pages": result.get("processed_pages"),
                 "mmd_text": _read_text(result["mmd_path"]),
             }
 
