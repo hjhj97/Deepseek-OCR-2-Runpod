@@ -1,0 +1,27 @@
+FROM vllm/vllm-openai:v0.8.5
+
+# Upgrade pip first.
+RUN pip install --upgrade pip --root-user-action=ignore
+
+# Install OCR runtime dependencies.
+COPY DeepSeek-OCR2-master/requirements.txt /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt --root-user-action=ignore
+
+# Install serving dependencies.
+RUN pip install runpod==1.7.6 --root-user-action=ignore
+
+# flash-attn for model inference.
+RUN pip install flash-attn==2.7.3 --no-build-isolation --root-user-action=ignore
+
+# Copy project source.
+COPY DeepSeek-OCR2-master/ /DeepSeek-OCR2-master/
+
+# Run from vLLM OCR directory.
+WORKDIR /DeepSeek-OCR2-master/DeepSeek-OCR2-vllm
+
+ENV CUDA_VISIBLE_DEVICES=0
+ENV VLLM_USE_V1=0
+ENV PYTHONUNBUFFERED=1
+ENV RUNPOD_PRELOAD_MODEL=1
+
+ENTRYPOINT ["python3", "-u", "runpod_handler.py"]
