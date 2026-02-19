@@ -23,6 +23,13 @@ from vllm import LLM, SamplingParams
 from process.ngram_norepeat import NoRepeatNGramLogitsProcessor
 from process.image_process import DeepseekOCR2Processor
 
+# Per-origin page policies.
+PAGE_POLICIES = {
+    "KR": {"rule": "first_n", "n": 53},
+    "US": {"rule": "us_special", "n": 53, "drop_first": 3, "tail_n": 50},
+    "UNKNOWN": {"rule": "first_n", "n": 53},
+}
+
 # 전역 변수 (한 번만 로드)
 llm = None
 sampling_params = None
@@ -80,6 +87,122 @@ def select_page_indices(total_pages, head_pages=3, tail_pages=50):
     tail_start = max(0, total_pages - tail_pages)
     tail = list(range(tail_start, total_pages))
     return sorted(set(head + tail))
+
+
+def select_page_indices_by_origin(total_pages, origin):
+    """
+    국가별 페이지 선택 규칙
+    - KR: 무조건 앞 53페이지(초과분 제외)
+    - US: 53페이지 이하면 KR과 동일, 초과면 앞 3페이지 제외 후 마지막 50페이지
+    - UNKNOWN: KR 규칙과 동일
+    """
+    if total_pages <= 0:
+        return []
+
+    if origin == "US":
+        if total_pages <= 53:
+            return list(range(total_pages))
+        # 앞 3페이지 제외한 범위에서 마지막 50페이지 선택
+        candidate = list(range(3, total_pages))
+        return candidate[-50:]
+
+    # KR / UNKNOWN
+    return list(range(min(53, total_pages)))
+
+
+def _extract_preview_text(pdf_input, max_pages=2):
+    if isinstance(pdf_input, bytes):
+        doc = fitz.open(stream=pdf_input, filetype="pdf")
+    else:
+        doc = fitz.open(pdf_input)
+    try:
+        page_count = doc.page_count
+        parts = []
+        for idx in range(min(max_pages, page_count)):
+            parts.append(doc[idx].get_text("text") or "")
+        return "\n".join(parts), page_count
+    finally:
+        doc.close()
+
+
+def _contains_korean(text):
+    return re.search(r"[\uac00-\ud7a3]", text) is not None
+
+
+def detect_patent_origin(pdf_input):
+    """
+    OCR 전에 특허 문서의 국가를 KR/US/UNKNOWN으로 분류한다.
+    텍스트 레이어가 없으면 UNKNOWN으로 반환한다.
+    """
+    preview_text, total_pages = _extract_preview_text(pdf_input, max_pages=2)
+    text = (preview_text or "").lower()
+
+    kr_score = 0
+    us_score = 0
+    evidence = []
+
+    kr_keywords = [
+        "대한민국특허청",
+        "공개특허공보",
+        "등록특허공보",
+        "한국특허",
+        "특허청",
+    ]
+    us_keywords = [
+        "united states patent",
+        "united states patent application publication",
+        "uspto",
+        "patent application publication",
+    ]
+
+    for kw in kr_keywords:
+        if kw in preview_text:
+            kr_score += 2
+            evidence.append(f"kr_keyword:{kw}")
+
+    for kw in us_keywords:
+        if kw in text:
+            us_score += 2
+            evidence.append(f"us_keyword:{kw}")
+
+    if re.search(r"\bkr\s*10[-\s]?\d+", text):
+        kr_score += 3
+        evidence.append("kr_pattern:kr10")
+    if re.search(r"\bkr[-\s]?\d{4}[-\s]?\d+", text):
+        kr_score += 2
+        evidence.append("kr_pattern:kr_number")
+
+    if re.search(r"\bus\s*\d{4}/\d+", text):
+        us_score += 3
+        evidence.append("us_pattern:us_publication")
+    if re.search(r"\bus\s*\d[\d,]*\s*(a1|a9|b1|b2)\b", text):
+        us_score += 3
+        evidence.append("us_pattern:us_grant")
+
+    if _contains_korean(preview_text):
+        kr_score += 2
+        evidence.append("kr_signal:hangul")
+
+    if preview_text.strip():
+        letters = re.findall(r"[A-Za-z]", preview_text)
+        if len(letters) > 200:
+            us_score += 1
+            evidence.append("us_signal:english_heavy")
+
+    if kr_score - us_score >= 2:
+        origin = "KR"
+    elif us_score - kr_score >= 2:
+        origin = "US"
+    else:
+        origin = "UNKNOWN"
+
+    return {
+        "origin": origin,
+        "total_pages": total_pages,
+        "kr_score": kr_score,
+        "us_score": us_score,
+        "evidence": evidence,
+    }
 
 
 def pdf_to_images_high_quality(pdf_input, dpi=144, image_format="PNG", page_indices=None):
@@ -236,7 +359,7 @@ def process_single_image(image):
     return cache_item
 
 
-def run_ocr(pdf_input, output_path, filename="output"):
+def run_ocr(pdf_input, output_path, filename="output", origin_hint=None):
     """
     OCR 실행 메인 함수
     
@@ -258,16 +381,22 @@ def run_ocr(pdf_input, output_path, filename="output"):
     os.makedirs(output_path, exist_ok=True)
     os.makedirs(f'{output_path}/images', exist_ok=True)
     
-    # PDF -> 이미지 변환 (50p 이하 전체, 초과 시 앞 3p + 뒤 50p)
-    print("PDF loading...")
-    if isinstance(pdf_input, bytes):
-        tmp_doc = fitz.open(stream=pdf_input, filetype="pdf")
+    # OCR 전 국가 분류 (KR/US/UNKNOWN)
+    detection = detect_patent_origin(pdf_input)
+    detected_origin = detection["origin"]
+    if isinstance(origin_hint, str) and origin_hint.upper() in {"KR", "US", "UNKNOWN"}:
+        origin = origin_hint.upper()
+        detection_source = "hint"
     else:
-        tmp_doc = fitz.open(pdf_input)
-    original_total_pages = tmp_doc.page_count
-    tmp_doc.close()
+        origin = detected_origin
+        detection_source = "auto"
 
-    selected_page_indices = select_page_indices(original_total_pages, head_pages=3, tail_pages=50)
+    policy = PAGE_POLICIES.get(origin, PAGE_POLICIES["UNKNOWN"])
+
+    # PDF -> 이미지 변환 (국가별 페이지 정책 적용)
+    print("PDF loading...")
+    original_total_pages = detection["total_pages"]
+    selected_page_indices = select_page_indices_by_origin(original_total_pages, origin)
     images, _, selected_page_indices = pdf_to_images_high_quality(
         pdf_input,
         page_indices=selected_page_indices,
@@ -341,6 +470,11 @@ def run_ocr(pdf_input, output_path, filename="output"):
         "total_pages": original_total_pages,
         "processed_page_count": len(images),
         "processed_pages": [i + 1 for i in selected_page_indices],
+        "patent_origin": origin,
+        "detected_origin": detected_origin,
+        "origin_detection_source": detection_source,
+        "origin_detection_detail": detection,
+        "page_policy": policy,
     }
 
 

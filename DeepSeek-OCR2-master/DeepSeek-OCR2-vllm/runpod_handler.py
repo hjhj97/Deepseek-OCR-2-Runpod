@@ -89,6 +89,7 @@ def handler(job):
     try:
         job_input = job.get("input") or {}
         pdf_bytes, filename = _get_pdf_bytes(job_input)
+        origin_hint = (job_input.get("patent_origin") or "").strip().upper() or None
 
         include_mmd_det_text = _as_bool(job_input.get("include_mmd_det_text"), default=False)
         include_layout_pdf_base64 = _as_bool(job_input.get("include_layout_pdf_base64"), default=False)
@@ -96,7 +97,7 @@ def handler(job):
 
         with tempfile.TemporaryDirectory(prefix="deepseek_ocr2_") as tmpdir:
             base_name = _safe_basename(filename)
-            result = run_ocr(pdf_bytes, tmpdir, base_name)
+            result = run_ocr(pdf_bytes, tmpdir, base_name, origin_hint=origin_hint)
 
             response = {
                 "status": "completed",
@@ -104,6 +105,10 @@ def handler(job):
                 "total_pages": result["total_pages"],
                 "processed_page_count": result.get("processed_page_count", result["total_pages"]),
                 "processed_pages": result.get("processed_pages"),
+                "patent_origin": result.get("patent_origin"),
+                "detected_origin": result.get("detected_origin"),
+                "origin_detection_source": result.get("origin_detection_source"),
+                "page_policy": result.get("page_policy"),
                 "mmd_text": _read_text(result["mmd_path"]),
             }
 
