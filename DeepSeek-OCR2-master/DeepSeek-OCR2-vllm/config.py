@@ -1,3 +1,4 @@
+import os
 
 BASE_SIZE = 1024
 IMAGE_SIZE = 768
@@ -8,7 +9,7 @@ MAX_CONCURRENCY = 100 # If you have limited GPU memory, lower the concurrency co
 NUM_WORKERS = 64 # image pre-process (resize/padding) workers 
 PRINT_NUM_VIS_TOKENS = False
 SKIP_REPEAT = True
-MODEL_PATH = 'deepseek-ai/DeepSeek-OCR-2' # change to your model path
+MODEL_PATH = os.getenv("MODEL_PATH", "/models/DeepSeek-OCR-2")
 
 # TODO: change INPUT_PATH
 # .pdf: run_dpsk_ocr_pdf.py; 

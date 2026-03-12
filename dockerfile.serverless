@@ -13,6 +13,14 @@ RUN pip install runpod==1.7.6 --root-user-action=ignore
 # flash-attn for model inference.
 RUN pip install flash-attn==2.7.3 --no-build-isolation --root-user-action=ignore
 
+# Bake model weights into image (eliminates runtime download & disk issues).
+ENV HF_HOME=/models/hf_cache
+RUN pip install huggingface_hub --root-user-action=ignore \
+    && python3 -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download('deepseek-ai/DeepSeek-OCR-2', local_dir='/models/DeepSeek-OCR-2')" \
+    && rm -rf /models/hf_cache/hub/.locks
+
 # Copy project source.
 COPY DeepSeek-OCR2-master/ /DeepSeek-OCR2-master/
 
