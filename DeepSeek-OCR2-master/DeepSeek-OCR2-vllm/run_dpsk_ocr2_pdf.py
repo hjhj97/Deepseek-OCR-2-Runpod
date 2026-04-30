@@ -26,7 +26,7 @@ from process.image_process import DeepseekOCR2Processor
 # Per-origin page policies.
 PAGE_POLICIES = {
     "KR": {"rule": "first_n", "n": 53},
-    "US": {"rule": "us_special", "n": 53, "drop_first": 3, "tail_n": 50},
+    "US": {"rule": "head_tail", "n": 53, "head_n": 3, "tail_n": 50},
     "UNKNOWN": {"rule": "first_n", "n": 53},
 }
 
@@ -93,7 +93,7 @@ def select_page_indices_by_origin(total_pages, origin):
     """
     국가별 페이지 선택 규칙
     - KR: 무조건 앞 53페이지(초과분 제외)
-    - US: 53페이지 이하면 KR과 동일, 초과면 앞 3페이지 제외 후 마지막 50페이지
+    - US: 53페이지 이하면 KR과 동일, 초과면 앞 3페이지 + 마지막 50페이지
     - UNKNOWN: KR 규칙과 동일
     """
     if total_pages <= 0:
@@ -102,9 +102,8 @@ def select_page_indices_by_origin(total_pages, origin):
     if origin == "US":
         if total_pages <= 53:
             return list(range(total_pages))
-        # 앞 3페이지 제외한 범위에서 마지막 50페이지 선택
-        candidate = list(range(3, total_pages))
-        return candidate[-50:]
+        # 앞 3페이지 + 마지막 50페이지
+        return select_page_indices(total_pages, head_pages=3, tail_pages=50)
 
     # KR / UNKNOWN
     return list(range(min(53, total_pages)))
